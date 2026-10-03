@@ -6,6 +6,26 @@ Rancher is a Kubernetes **management application**, not a Kubernetes distributio
 
 Keep your application workloads on a separate downstream cluster, such as the sibling `kubeadm-proxmox-lab`. A broken application should not consume the resources Rancher needs to manage it. This example uses one management server plus two management worker VMs and one Rancher replica. It is a learning topology, not HA: server/SQLite failure interrupts management. Production requires a reviewed three-server/etcd design, load balancing and separate failure domains.
 
+
+## Capacity and reachability before deployment
+
+The checked-in VM example allocates **three guests, each 4 vCPU, 8 GiB RAM and 40 GiB disk**: 12 allocated vCPU, 24 GiB RAM and 120 GiB guest disks before Proxmox, runner, template and workload overhead. These are example allocations, not a minimum hardware specification or throughput benchmark. If you cannot spare this, use the documented bare-metal path only on suitable dedicated hosts or first reduce the reviewed topology; do not blindly apply the three-guest example.
+
+**No GPU is required** for this DNS, Kubernetes, Rancher, telemetry or tunnel lesson. AI inference is a separate optional workload: model size, precision, context and concurrency determine RAM/VRAM requirements; these examples do not reserve or promise that capacity. Account separately for the chosen runner, GitLab if self-hosted, host OS and existing services. Check `free -h`, `df -h`, and Proxmox `pvesm status`/`pvesh get /nodes/YOUR_NODE/status` on the actual intended machines. On an existing cluster compare allocatable and requested resources with `kubectl describe nodes` and storage/PVC inventory before adding LGTM.
+
+| Initiator | Destination and port | Purpose / when needed |
+| --- | --- | --- |
+| Workstation | Selected GitHub or GitLab HTTPS 443 (or configured trusted local TLS port) | Clone, CLI API and pipeline control; not a substitute for runner network reach |
+| Dedicated selected runner | Proxmox TLS API TCP 8006 | VM Terraform path only; trust its CA, keep management outside DMZ |
+| Dedicated selected runner | Intended guest TCP 22 | Reviewed SSH/bootstrap paths; pin unique host keys |
+| Runner / guests | Approved package and container registries TCP 443 | Downloads; add only repository-specific approved HTTP 80 sources if required |
+| Workload runner | Intended Kubernetes TLS API TCP 6443, or configured KAS TLS route | Manifest/Helm paths only; scoped credentials and verified TLS |
+| Trusted LAN DNS clients | Intended DNS server UDP and TCP 53 | DNS paths only; deliberate listener and narrow ACL/firewall, not demo high ports |
+| DMZ tunnel host | Cloudflare UDP/TCP 7844 and approved HTTPS 443 | Cloudflare connector/install path only; no inbound router forward |
+
+A hosted GitHub validation runner has **no assumed route to your private LAN**. Configure only the selected private execution runner with necessary routes, DNS and firewall permissions. Keep DMZ-to-LAN/admin denial intact; tunnel connectivity alone does not segment your network. Test the selected route from the actual runner with TLS-verifying `curl`, pinned-key SSH and the README runtime commands before deploying, rather than opening management broadly.
+
+
 ## Reviewed version combination
 
 Checked 2026-10-03: **Rancher 2.14.3**, **K3s v1.35.9+k3s1**, **cert-manager v1.20.4**, **Helm 3.20.x**. The [Rancher 2.14.3 support matrix](https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/rancher-v2-14-3/) certifies K3s 1.33–1.35 for the management cluster. The [cert-manager supported releases table](https://cert-manager.io/docs/releases/) lists its Kubernetes compatibility; 1.20 supports this 1.35 baseline. Versioned upstream release artifacts were verified available. Rancher 2.14.4 has a published support-matrix page but was absent from both official Helm indexes during validation, so the example pins the available 2.14.3 chart instead. The [Rancher installation guide](https://ranchermanager.docs.rancher.com/v2.14/getting-started/installation-and-upgrade/install-upgrade-on-a-kubernetes-cluster/) uses Helm 3 and cert-manager for generated TLS. [Helm 3 version compatibility](https://helm.sh/docs/v3/topics/version_skew/) lists 3.20.x with Kubernetes 1.32–1.35.
@@ -134,11 +154,22 @@ If Helm times out, inspect `kubectl -n cattle-system describe pod`, ingress even
 
 Use a separate manifest/Helm repository for Grafana, Loki (logs), Tempo (traces), Mimir (metrics) and Alloy collection. Log collection does **not** automatically create application traces: instrument applications with OpenTelemetry and configure trace export. Metrics also need explicit scrape/export configuration, retention and storage. Small single-replica labs trade availability for lower resource use; do not mistake them for production architectures.
 
+## Choose one CI provider before configuring deployment
+
+GitHub and GitLab are **alternative complete paths**. [CI-PATHS.md](CI-PATHS.md) provides the runner setup, GitLab CLI inputs and job controls alongside the GitHub commands below. Choose one owner for each lab. A source-control server stores code and schedules jobs; the selected **runner machine** executes Terraform, SSH, Ansible or Helm and needs the documented network access. Cloning this repository does not install a runner or create a route to Proxmox.
+
+| Choice | Source and job scheduler | Execution machine | Kubernetes access |
+| --- | --- | --- | --- |
+| GitHub | Your private GitHub repository and Actions | Your dedicated self-hosted Linux runner | Scoped kubeconfig where needed; GitLab/KAS not required |
+| GitLab | Your private GitLab project and GitLab CI | Your dedicated protected GitLab Linux runner | Scoped kubeconfig; GitLab agent/KAS is an optional separately configured route |
+
+The public upstream runs unprivileged hosted validation only. A local GitLab is useful if you want to host your own source and scheduler, but is **not** a prerequisite for the GitHub path. KAS does not provision VMs and is not a general-purpose Terraform runner.
+
 ## Why the CI jobs have separate phases
 
 Terraform owns VM allocation and cloud-init inputs; Ansible owns host bootstrap. Kubernetes manifests and Helm own workloads inside the resulting cluster. GitLab KAS connects an agent to GitLab for authorized Kubernetes access without exposing port 6443 publicly; it does not provision VMs or bypass Kubernetes RBAC. Community Edition uses the agent service account scope; CI job impersonation requires the applicable Premium/Ultimate tier.
 
-The public repository validates code on an unprivileged hosted GitHub runner. Its deployment job is deliberately disabled: self-hosted runners belong in your own private deployment repository, never a public fork that accepts outside code. `workflow_dispatch`, a private repository, the default branch, and `DEPLOY_ENABLED=true` must all match before deployment runs. The `homelab` environment can enforce reader-owned approval and secret policies; creating its name alone does not configure approvals. GitLab uses a private project, protected default branch, manual job, protected `homelab` runner and `resource_group`. Configure a separate unprivileged `validation` runner for GitLab validation. Do not share the deployment runner with untrusted projects.
+The public repository validates code on an unprivileged hosted GitHub runner. Its deployment job is ineligible in the public upstream: self-hosted runners belong in your own private deployment repository, never a public fork that accepts outside code. `workflow_dispatch`, a private repository, the default branch, and `DEPLOY_ENABLED=true` must all match before deployment runs. The `homelab` environment can enforce reader-owned approval and secret policies; creating its name alone does not configure approvals. GitLab uses a private project, protected default branch, manual job, protected `homelab` runner and `resource_group`. Configure a separate unprivileged `validation` runner for GitLab validation. Do not share the deployment runner with untrusted projects.
 
 Create a private copy using the CLI, after reviewing the source:
 
@@ -150,7 +181,7 @@ gh repo create YOUR-OWNER/rancher-proxmox-lab-deployment --private --source . --
 gh variable set DEPLOY_ENABLED --body false --repo YOUR-OWNER/REPO
 ```
 
-For GitLab, create a private project with `glab repo create --private`, push the reviewed checkout there, protect its default branch, and register a protected deployment runner. Store secrets as masked, protected environment-scoped CI variables; public settings belong in regular variables. Importing source does not transfer GitHub secrets, runners or state. Set `HOMELAB_ACTION` when starting the GitLab manual job; it defaults to `plan`.
+For GitLab, create a private project with `glab repo create --private`, push the reviewed checkout there, protect its default branch, and register a protected deployment runner. Store secrets as protected CI variables; use masking for eligible single-line values. Multiline keys and kubeconfigs cannot satisfy masking restrictions: keep them protected, never print them, and follow CI-PATHS.md. Public settings belong in regular variables. Importing source does not transfer GitHub secrets, runners or state. Set `HOMELAB_ACTION` when starting the GitLab manual job; it defaults to `plan`.
 
 ### Persistent Terraform state and trusted SSH
 
