@@ -1,0 +1,95 @@
+---
+- name: Prepare dedicated Ubuntu management hosts
+  hosts: all
+  become: true
+  vars:
+    installer_lock: "{{ lookup('file', playbook_dir + '/installer.lock.json') | from_json }}"
+  tasks:
+    - name: Check supported OS and single-server lab topology
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version == '24.04'
+          - groups['control_plane'] | length == 1
+    - name: Install base tools and maintain time synchronization
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, chrony]
+        update_cache: true
+        state: present
+    - name: Start clock synchronization
+      ansible.builtin.systemd_service:
+        name: chrony
+        enabled: true
+        state: started
+    - name: Download release-tagged checksum-locked K3s installer
+      ansible.builtin.get_url:
+        url: "{{ installer_lock.url }}"
+        checksum: "sha256:{{ installer_lock.sha256 }}"
+        dest: /var/tmp/k3s-lab-install.sh
+        mode: '0700'
+    - name: Detect an existing K3s install
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+    - name: Inspect existing version without upgrading
+      ansible.builtin.command: /usr/local/bin/k3s --version
+      register: existing_version
+      changed_when: false
+      when: k3s_binary.stat.exists
+    - name: Refuse implicit version changes
+      ansible.builtin.assert:
+        that: "'v1.35.9+k3s1' in existing_version.stdout"
+        fail_msg: Use the reviewed K3s upgrade process instead of rerunning with a different pin.
+      when: k3s_binary.stat.exists
+
+- name: Install dedicated single-server management cluster
+  hosts: control_plane
+  become: true
+  tasks:
+    - name: Install K3s server once with default Traefik ingress
+      ansible.builtin.command: /var/tmp/k3s-lab-install.sh
+      environment:
+        INSTALL_K3S_VERSION: v1.35.9+k3s1
+        INSTALL_K3S_EXEC: server --write-kubeconfig-mode=600
+      args:
+        creates: /etc/systemd/system/k3s.service
+    - name: Ensure server service is active
+      ansible.builtin.systemd_service:
+        name: k3s
+        enabled: true
+        state: started
+    - name: Read protected agent registration token
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: registration_token
+      no_log: true
+
+- name: Join management workers
+  hosts: workers
+  become: true
+  tasks:
+    - name: Install agents once without printing registration token
+      ansible.builtin.command: /var/tmp/k3s-lab-install.sh
+      environment:
+        INSTALL_K3S_VERSION: v1.35.9+k3s1
+        K3S_URL: "https://{{ hostvars[groups['control_plane'][0]].ansible_host }}:6443"
+        K3S_TOKEN: "{{ hostvars[groups['control_plane'][0]].registration_token.content | b64decode | trim }}"
+      args:
+        creates: /etc/systemd/system/k3s-agent.service
+      no_log: true
+    - name: Ensure agent service is active
+      ansible.builtin.systemd_service:
+        name: k3s-agent
+        enabled: true
+        state: started
+
+- name: Verify management cluster readiness
+  hosts: control_plane
+  become: true
+  tasks:
+    - name: Wait for nodes before Rancher installation
+      ansible.builtin.command: k3s kubectl wait nodes --all --for=condition=Ready --timeout=600s
+      changed_when: false
+    - name: Wait for ingress controller
+      ansible.builtin.command: k3s kubectl -n kube-system rollout status deployment/traefik --timeout=300s
+      changed_when: false
