@@ -21,7 +21,7 @@ jobs:
       HOMELAB_ACTION: ${{ inputs.action }}
       DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
       HOMELAB_PRIVATE_REPOSITORY: ${{ github.event.repository.private }}
-      TF_REPOSITORY_ID: ${{ vars.TF_REPOSITORY_ID || github.repository_id }}
+      TF_REPOSITORY_ID: ${{ vars.TF_REPOSITORY_ID || format('github-{0}', github.repository_id) }}
       EXPECTED_CONTEXT: ${{ vars.EXPECTED_CONTEXT }}
       STORAGE_CLASS: ${{ vars.STORAGE_CLASS }}
       RANCHER_HOSTNAME: ${{ vars.RANCHER_HOSTNAME }}
