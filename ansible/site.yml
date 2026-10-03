@@ -16,6 +16,15 @@
         name: [ca-certificates, curl, chrony]
         update_cache: true
         state: present
+    - name: Disable active swap on dedicated management hosts
+      ansible.builtin.command: swapoff -a
+      changed_when: ansible_swaptotal_mb > 0
+    - name: Preserve fstab while disabling swap entries
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#\n]+\s+swap\s+.*)$'
+        replace: '# k3s lab: \1'
+        backup: true
     - name: Start clock synchronization
       ansible.builtin.systemd_service:
         name: chrony
@@ -87,6 +96,16 @@
   hosts: control_plane
   become: true
   tasks:
+    - name: Read registered management node count
+      ansible.builtin.command: k3s kubectl get nodes -o json
+      register: management_nodes
+      until: (management_nodes.stdout | from_json)['items'] | length >= (groups['all'] | length)
+      retries: 24
+      delay: 5
+      changed_when: false
+    - name: Require all intended nodes and no unexpected nodes
+      ansible.builtin.assert:
+        that: (management_nodes.stdout | from_json)['items'] | length == (groups['all'] | length)
     - name: Wait for nodes before Rancher installation
       ansible.builtin.command: k3s kubectl wait nodes --all --for=condition=Ready --timeout=600s
       changed_when: false
