@@ -1,5 +1,7 @@
 # Rancher management lab on Proxmox or bare metal
 
+Start with [GitOps, the bootstrap order, and why the repos are separate](docs/START-HERE.md).
+
 Rancher is a Kubernetes **management application**, not a Kubernetes distribution. This repository first builds a dedicated **K3s Kubernetes management cluster**, then installs Rancher using Helm. Rancher adds centralized inventory, access control and lifecycle visibility for other Kubernetes clusters. K3s is the distribution providing this example's API server, container runtime, pod networking and default Traefik ingress.
 
 Keep your application workloads on a separate downstream cluster, such as the sibling `kubeadm-proxmox-lab`. A broken application should not consume the resources Rancher needs to manage it. This example uses one management server plus two management worker VMs and one Rancher replica. It is a learning topology, not HA: server/SQLite failure interrupts management. Production requires a reviewed three-server/etcd design, load balancing and separate failure domains.
